@@ -1,13 +1,13 @@
 const http = require("http");
 const Jimp = require("jimp");
 const jsQR = require("jsqr");
-// const Gpio = require("onoff").Gpio;
+const Gpio = require("onoff").Gpio;
 const axios = require("axios");
 const dotenv = require("dotenv");
 
 dotenv.config({ path: "./.env.local" });
 
-// const door = new Gpio(18, "out");
+const door = new Gpio(18, "out");
 
 // Replace with your camera's IP address
 const cameraIp = process.env.CAMERA_IP;
@@ -127,7 +127,7 @@ const makeRequest = async function (token) {
 
   try {
     // Makes the post request to the validation API
-    const res = await axios.post(`${API_URL}/api/access/token`, {
+    const res = await axios.post(`${API_URL}/api/access/qr-token`, {
       token,
       roomName,
       roomBuilding,
@@ -138,7 +138,7 @@ const makeRequest = async function (token) {
     // console.log(data);
     if (data["grantedAccess"] === true) {
       console.log("on -> grantedAccess");
-      // door.write(1).then((_) => setTimeout(() => door.write(0), 2000));
+      door.write(1).then((_) => setTimeout(() => door.write(0), 2000));
     }
   } catch (error) {
     console.log("makeRequest -> error: ", error);
@@ -146,6 +146,6 @@ const makeRequest = async function (token) {
 };
 
 process.on("SIGINT", (_) => {
-  // door.unexport();
+  door.unexport();
   process.exit();
 });
