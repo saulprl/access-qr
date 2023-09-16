@@ -18,6 +18,11 @@ const room = process.env.ROOM;
 const credentials = process.env.CREDENTIALS;
 
 let lastToken = "";
+let canMakeRequest = true;
+let request;
+let requestTimeout;
+
+const retryInterval = 5000;
 
 // HTTP request options
 const options = {
@@ -28,57 +33,89 @@ const options = {
   },
 };
 
-// Create an HTTP request to the camera's MJPEG video feed
-const request = http.get(options, (response) => {
-  // Create a buffer to store the video data
-  let videoBuffer = Buffer.from([]);
-  console.log("Connected to camera");
-  const frameProcessingInterval = 1000;
+const connectToCamera = () => {
+  console.log("Attempting connection");
+  // Create an HTTP request to the camera's MJPEG video feed
+  request = http.get(options, (response) => {
+    // Create a buffer to store the video data
+    let videoBuffer = Buffer.from([]);
+    console.log("Connected to camera");
+    const frameProcessingInterval = 800;
 
-  let canProcessFrame = true;
+    let canProcessFrame = true;
+    let responseTimeout;
 
-  response.on("data", (data) => {
-    // Append data to the video buffer
-    videoBuffer = Buffer.concat([videoBuffer, data]);
+    response.on("data", (data) => {
+      // Append data to the video buffer
+      videoBuffer = Buffer.concat([videoBuffer, data]);
 
-    // Find the start and end of each frame
-    let startIndex = 0;
-    let endIndex = 0;
-    while (startIndex < videoBuffer.length) {
-      // Find the start marker (0xFFD8)
-      startIndex = videoBuffer.indexOf(Buffer.from([0xff, 0xd8]), startIndex);
-      if (startIndex === -1) {
-        // Start marker not found, exit the loop
-        break;
+      // Find the start and end of each frame
+      let startIndex = 0;
+      let endIndex = 0;
+      while (startIndex < videoBuffer.length) {
+        // Find the start marker (0xFFD8)
+        startIndex = videoBuffer.indexOf(Buffer.from([0xff, 0xd8]), startIndex);
+        if (startIndex === -1) {
+          // Start marker not found, exit the loop
+          break;
+        }
+
+        // Find the end marker (0xFFD9)
+        endIndex = videoBuffer.indexOf(Buffer.from([0xff, 0xd9]), startIndex);
+        if (endIndex === -1) {
+          // End marker not found, exit the loop
+          break;
+        }
+
+        // Extract the frame between start and end markers
+        const frameData = videoBuffer.slice(startIndex, endIndex + 2); // Include the end marker
+        startIndex = endIndex + 2; // Move to the next frame
+
+        // Process the frame (e.g., decode using Jimp and recognize QR codes)
+        if (canProcessFrame) {
+          canProcessFrame = false;
+
+          processFrame(frameData);
+
+          setTimeout(() => {
+            canProcessFrame = true;
+          }, frameProcessingInterval);
+        }
+
+        if (responseTimeout) {
+          clearTimeout(responseTimeout);
+        }
+
+        responseTimeout = setTimeout(handleRequestTimeout, retryInterval);
       }
 
-      // Find the end marker (0xFFD9)
-      endIndex = videoBuffer.indexOf(Buffer.from([0xff, 0xd9]), startIndex);
-      if (endIndex === -1) {
-        // End marker not found, exit the loop
-        break;
-      }
+      // Remove processed data from the video buffer
+      videoBuffer = videoBuffer.slice(endIndex + 2);
+    });
 
-      // Extract the frame between start and end markers
-      const frameData = videoBuffer.slice(startIndex, endIndex + 2); // Include the end marker
-      startIndex = endIndex + 2; // Move to the next frame
+    response.on("end", () => {
+      console.error(
+        `Connection to the camera was lost. Retrying in ${
+          retryInterval / 1000
+        } seconds...`
+      );
 
-      // Process the frame (e.g., decode using Jimp and recognize QR codes)
-      if (canProcessFrame) {
-        canProcessFrame = false;
+      setTimeout(connectToCamera, retryInterval);
+    });
 
-        processFrame(frameData);
-
-        setTimeout(() => {
-          canProcessFrame = true;
-        }, frameProcessingInterval);
-      }
-    }
-
-    // Remove processed data from the video buffer
-    videoBuffer = videoBuffer.slice(endIndex + 2);
+    responseTimeout = setTimeout(handleRequestTimeout, retryInterval);
   });
-});
+
+  request.on("error", (error) => {
+    console.error("Error connecting to the camera: ", error);
+    console.log(`Retrying in ${retryInterval / 1000} seconds...`);
+
+    if (requestTimeout) {
+      clearTimeout(requestTimeout);
+    }
+    requestTimeout = setTimeout(connectToCamera, retryInterval);
+  });
+};
 
 async function processFrame(frameData) {
   // Convert the frame to a Jimp image
@@ -92,16 +129,14 @@ async function processFrame(frameData) {
     const decoded = jsQR(pixels, image.bitmap.width, image.bitmap.height);
 
     // Display and process the frame as needed
-    if (decoded) {
+    if (decoded && canMakeRequest) {
       const { data } = decoded;
       makeRequest(data);
+    } else if (!canMakeRequest) {
+      console.log("Skipping request");
     }
   });
 }
-
-request.on("error", (error) => {
-  console.error("Error connecting to the camera:", error);
-});
 
 /**
  * Makes a request to a specific API endpoint which expects a JWT string. If the request is successful and the user is granted access, output a signal through the specified PIN (GPIO 18).
@@ -117,13 +152,12 @@ const makeRequest = async function (token) {
     lastToken = "";
   }, 10000);
 
+  canMakeRequest = false;
+  setTimeout(() => {
+    canMakeRequest = true;
+  }, 2000);
+
   console.log("makeRequest -> started");
-  const authData = {
-    token,
-    roomName,
-    roomBuilding,
-    room,
-  };
 
   try {
     // Makes the post request to the validation API
@@ -144,6 +178,23 @@ const makeRequest = async function (token) {
     console.log("makeRequest -> error: ", error);
   }
 };
+
+const handleRequestTimeout = () => {
+  console.error(
+    `Response from the camera is inactive. Retrying in ${
+      retryInterval / 1000
+    } seconds...`
+  );
+
+  if (request) {
+    console.log("destroying request");
+    request.destroy();
+
+    setTimeout(connectToCamera, retryInterval);
+  }
+};
+
+connectToCamera();
 
 process.on("SIGINT", (_) => {
   door.unexport();
