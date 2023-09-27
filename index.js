@@ -36,11 +36,15 @@ const options = {
 const connectToCamera = () => {
   console.log("Attempting connection");
   // Create an HTTP request to the camera's MJPEG video feed
+  if (request) {
+    request = null;
+  }
+
   request = http.get(options, (response) => {
     // Create a buffer to store the video data
     let videoBuffer = Buffer.from([]);
     console.log("Connected to camera");
-    const frameProcessingInterval = 800;
+    const frameProcessingInterval = 500;
 
     let canProcessFrame = true;
     let responseTimeout;
